@@ -1,0 +1,33 @@
+project:
+  title: "mtg-scrape"
+  output-dir: _site
+  render:
+    - analysis/*.qmd
+
+execute:
+  freeze: auto
+  warning: false
+  message: false
+  echo: true
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-location: right
+    fig-width: 8
+    fig-height: 5
+    fig-dpi: 140
+    fig-responsive: true
+    code-tools: true
+    code-fold: show
+    code-overflow: wrap
+    embed-resources: false
+    link-external-newwindow: true
+
+knitr:
+  opts_chunk:
+    dev: "png"
+    dev.args:
+      bg: "transparent"

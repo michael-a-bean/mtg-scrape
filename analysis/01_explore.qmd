@@ -1,0 +1,130 @@
+---
+title: "MTG price archive — first exploration"
+author: "Michael"
+date: today
+format:
+  html:
+    toc: true
+    code-fold: show
+---
+
+# Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+suppressPackageStartupMessages({
+  library(arrow)       # open_dataset over S3 Parquet
+  library(dplyr)       # tidyverse verbs on Arrow tables
+  library(ggplot2)
+  library(scales)
+  library(lubridate)
+  library(here)
+})
+
+source(here::here("R", "theme.R"))
+
+bucket <- Sys.getenv("MTG_S3_BUCKET", "mtg-scrape-unwindgames")
+region <- Sys.getenv("AWS_REGION",    "us-east-1")
+```
+
+# Open the Parquet dataset
+
+Reads directly from S3 without pulling the data locally. `arrow` pushes
+filter/select down to the file reader, so the Parquet columnar format pays
+off on every query.
+
+```{r}
+prices <- open_dataset(
+  sources = sprintf("s3://%s/prices/?region=%s", bucket, region),
+  format  = "parquet"
+)
+
+prices
+```
+
+# Row counts and shape
+
+Total row count across the 90-day archive:
+
+```{r}
+prices |>
+  summarise(rows = n()) |>
+  collect()
+```
+
+Distribution across vendor × kind × finish:
+
+```{r}
+prices |>
+  count(vendor, kind, finish, sort = TRUE) |>
+  collect()
+```
+
+# Daily observation volume
+
+Does every date partition have roughly the same row count, or are some
+providers dropping out on older dates?
+
+```{r daily-volume, fig.cap = "Daily observation volume by vendor, 90-day window"}
+daily <- prices |>
+  filter(kind == "retail") |>
+  count(date, vendor) |>
+  collect()
+
+daily |>
+  ggplot(aes(date, n, color = vendor)) +
+  geom_line(linewidth = 0.4) +
+  scale_y_continuous(labels = label_comma()) +
+  labs(
+    title    = "Daily price observations per vendor",
+    subtitle = "Retail only; shows how completely each vendor reports across the 90-day window",
+    x = NULL, y = NULL,
+    color = NULL,
+    caption = "Source: MTGJSON AllPrices archive"
+  ) +
+  theme_mtg()
+```
+
+# Top-20 TCGplayer trajectories
+
+For a quick sanity check, plot price trajectories for the 20 most expensive
+non-foil cards on TCGplayer as of the latest archive date.
+
+```{r tcgplayer-top20, fig.cap = "Top 20 TCGplayer non-foil cards by latest market price, log scale"}
+#| cache: true
+
+snapshot <- prices |>
+  filter(vendor == "tcgplayer", kind == "retail", finish == "normal") |>
+  select(card_uuid, date, price) |>
+  collect()
+
+latest_day <- max(snapshot$date)
+
+top20 <- snapshot |>
+  filter(date == latest_day) |>
+  slice_max(price, n = 20) |>
+  pull(card_uuid)
+
+snapshot |>
+  filter(card_uuid %in% top20) |>
+  ggplot(aes(date, price, group = card_uuid)) +
+  geom_line(alpha = 0.45, linewidth = 0.4, color = mtg_palette["black"]) +
+  scale_y_log10(labels = label_dollar()) +
+  labs(
+    title    = sprintf("TCGplayer retail — top 20 as of %s", latest_day),
+    subtitle = "Non-foil only; one faint line per card; log y-axis",
+    x = NULL, y = NULL,
+    caption = "Source: MTGJSON AllPrices archive"
+  ) +
+  theme_mtg()
+```
+
+# Next steps
+
+- Join the card dimension (`dimension/mtgjson/allprintings/`) to attach
+  set, rarity, color identity, and Reserved List flag.
+- Add EDHREC / tournament play-rate signal once the ingest is wired.
+- Build a reprint-event feature table and model price shocks around
+  announcement dates.

@@ -15,3 +15,17 @@ tmp/
 .vscode/
 .pytest_cache/
 .ruff_cache/
+
+# Quarto
+_site/
+_freeze/
+.quarto/
+
+# R
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+renv/library/
+renv/local/
+renv/staging/

@@ -26,7 +26,11 @@ scripts/
   backfill.yml  — manual workflow_dispatch to seed 90 days
 
 infra/aws-setup.md — one-time AWS setup (bucket, IAM, OIDC)
-notebooks/explore.R — starter R analysis over S3 Parquet
+analysis/
+  01_explore.qmd     — first Quarto analysis (R + arrow + ggplot)
+R/
+  theme.R            — Tufte-inspired ggplot theme (theme_mtg, scale_*_mtg)
+_quarto.yml          — project-level Quarto config
 ```
 
 ## S3 layout
@@ -75,7 +79,21 @@ python -m scripts.backfill   # or -m src.ingest
 
 ## Querying
 
-- **Python:** `pyarrow.dataset.dataset("s3://.../prices/")` then `.to_table()`.
-- **R:** see `notebooks/explore.R`.
-- **DuckDB:** `SELECT * FROM 's3://.../prices/*/*.parquet' LIMIT 10;`
-- **Athena:** point a Glue crawler at `s3://.../prices/` (partition keys: `dt`).
+Analysis lives in Quarto (`.qmd`) under `analysis/`. Render with:
+
+```bash
+quarto render analysis/01_explore.qmd
+# or watch:
+quarto preview analysis/01_explore.qmd
+```
+
+Pick a language per job — Python for engineering, R tidyverse/tidymodels for
+analysis. DuckDB works from either side. Examples:
+
+- **R (arrow):** `open_dataset("s3://.../prices/")` — see `analysis/01_explore.qmd`.
+- **Python (pyarrow):** `pyarrow.dataset.dataset("s3://.../prices/")`.
+- **DuckDB (CLI):** `SELECT * FROM 's3://mtg-scrape-unwindgames/prices/*/*.parquet' LIMIT 10;`
+- **Athena:** point a Glue crawler at `s3://.../prices/` (partition key: `dt`).
+
+R analysis uses the Tufte-inspired `theme_mtg()` defined in `R/theme.R`.
+Required R packages: `arrow`, `dplyr`, `ggplot2`, `scales`, `lubridate`, `here`.
