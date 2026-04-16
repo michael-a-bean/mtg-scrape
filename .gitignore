@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.envrc
+*.parquet
+*.json
+*.json.xz
+*.tar.xz
+*.sqlite
+tmp/
+.DS_Store
+.idea/
+.vscode/
+.pytest_cache/
+.ruff_cache/
