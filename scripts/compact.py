@@ -55,26 +55,54 @@ def list_partition_keys(s3, date: str) -> list[str]:
 
 
 def delete_keys(s3, keys: list[str]) -> None:
+    """Delete keys in batches. Raises if any key fails — silent partial
+    failure was the bug that caused duplicate files to persist."""
     for i in range(0, len(keys), 1000):
         batch = keys[i : i + 1000]
-        s3.delete_objects(
+        resp = s3.delete_objects(
             Bucket=S3_BUCKET,
-            Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
+            Delete={"Objects": [{"Key": k} for k in batch]},
         )
+        errors = resp.get("Errors", [])
+        if errors:
+            raise RuntimeError(
+                f"delete_objects returned {len(errors)} errors; "
+                f"first: {errors[0]}"
+            )
 
 
 def compact_partition(s3, s3fs: pafs.S3FileSystem, date: str, dry_run: bool) -> tuple[int, int]:
-    keys = list_partition_keys(s3, date)
-    if len(keys) <= 1:
-        return 0, len(keys)
+    """Merge every .parquet in this partition into one compacted file.
 
-    uris = [f"{S3_BUCKET}/{k}" for k in keys]
+    Reads source files AND any pre-existing compacted file (the latter is a
+    merge of earlier sources, so we only read it if no sources remain;
+    otherwise reading both would double-count). After writing the new
+    compacted file, deletes every prior key.
+    """
+    all_keys = list_partition_keys(s3, date)
+    sources = [k for k in all_keys if "compacted" not in k]
+    compacted = [k for k in all_keys if "compacted" in k]
+
+    # Nothing to do: already a single compacted file, no sources arrived since.
+    if not sources and len(compacted) <= 1:
+        return 0, 0
+
+    # Read the right set. If sources exist, they are authoritative and a stale
+    # compacted file (if any) is a subset — don't read it.
+    read_keys = sources if sources else compacted
+
+    uris = [f"{S3_BUCKET}/{k}" for k in read_keys]
     table = pq.read_table(uris, filesystem=s3fs)
     rows = table.num_rows
 
+    obsolete = all_keys  # everything gets replaced by the new compacted file
+
     if dry_run:
-        log.info("dt=%s — would compact %d files (%d rows)", date, len(keys), rows)
-        return rows, len(keys)
+        log.info(
+            "dt=%s — would compact %d files (%d rows); would delete %d old keys",
+            date, len(read_keys), rows, len(obsolete),
+        )
+        return rows, len(read_keys)
 
     with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
         tmp_path = tmp.name
@@ -86,15 +114,15 @@ def compact_partition(s3, s3fs: pafs.S3FileSystem, date: str, dry_run: bool) -> 
             s3.upload_fileobj(fp, S3_BUCKET, new_key)
         log.info("dt=%s — wrote %s (%d rows)", date, new_key, rows)
 
-        delete_keys(s3, keys)
-        log.info("dt=%s — deleted %d source files", date, len(keys))
+        delete_keys(s3, obsolete)
+        log.info("dt=%s — deleted %d old files", date, len(obsolete))
     finally:
         try:
             os.unlink(tmp_path)
         except FileNotFoundError:
             pass
 
-    return rows, len(keys)
+    return rows, len(read_keys)
 
 
 def main(argv: list[str] | None = None) -> int:

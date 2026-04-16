@@ -114,7 +114,8 @@ cat > perms.json <<'EOF'
         "s3:PutObject",
         "s3:GetObject",
         "s3:HeadObject",
-        "s3:ListBucket"
+        "s3:ListBucket",
+        "s3:DeleteObject"
       ],
       "Resource": [
         "arn:aws:s3:::mtg-scrape-unwindgames",
