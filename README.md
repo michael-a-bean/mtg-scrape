@@ -1,99 +1,110 @@
 # mtg-scrape
 
-Daily MTG price archive. Pulls MTGJSON + Scryfall bulk data, normalizes
-prices to long-form Parquet, stages everything to S3. Runs on GitHub
-Actions; costs about a dollar a month.
+Daily Magic: The Gathering price archive. Pulls MTGJSON + Scryfall bulk
+data, normalizes to partitioned Parquet on S3, runs on GitHub Actions.
+Analysis in Quarto + R.
 
-## Layout
+> **Working on the codebase?** Read [`AGENTS.md`](AGENTS.md) — it is the
+> canonical brief for both human and agent contributors. This README is
+> a skim-friendly entry point.
 
-```
-src/
-  config.py          — env-driven settings
-  schema.py          — pyarrow schema for the prices fact table
-  mtgjson_client.py  — HTTP client (Meta + streaming downloads)
-  s3_util.py         — put/head/stream helpers
-  normalize.py       — streaming JSON → long-form rows (ijson)
-  writer.py          — batched Parquet writer, date-partitioned
-  ingest.py          — daily driver: AllPricesToday → S3
+## Why
 
-scripts/
-  backfill.py            — one-shot: 90-day AllPrices seed
-  scryfall_bulk.py       — daily Scryfall default_cards → S3 raw
-  allprintings_parquet.py— daily MTGJSON card dimension (native Parquet)
+MTGJSON's `AllPrices` feed only retains 90 days; Scryfall prices go
+stale after 24 hours; commercial APIs (TCGplayer, Cardmarket) are
+closed to new applicants. **The only way to get a multi-year MTG price
+panel is to start archiving daily — today.** That's the whole project.
 
-.github/workflows/
-  ingest.yml    — daily cron @ 03:30 UTC (prices + printings + scryfall)
-  backfill.yml  — manual workflow_dispatch to seed 90 days
-
-infra/aws-setup.md — one-time AWS setup (bucket, IAM, OIDC)
-analysis/
-  01_explore.qmd     — first Quarto analysis (R + arrow + ggplot)
-R/
-  theme.R            — Tufte-inspired ggplot theme (theme_mtg, scale_*_mtg)
-_quarto.yml          — project-level Quarto config
-```
-
-## S3 layout
+## How it works
 
 ```
-s3://mtg-scrape-unwindgames/
-├── prices/dt=YYYY-MM-DD/part-HHMMSS.parquet    ← normalized fact table
-├── raw/mtgjson/dt=YYYY-MM-DD/AllPricesToday.json.xz
-├── raw/mtgjson/dt=YYYY-MM-DD/AllPrintingsParquetFiles.tar.xz
-├── raw/scryfall/default_cards/dt=YYYY-MM-DD/default_cards.json
-├── dimension/mtgjson/allprintings/dt=YYYY-MM-DD/*.parquet
-└── state/mtgjson/{AllPricesToday,AllPrices,AllPrintingsParquet}/VERSION-DATE.json
+MTGJSON AllPricesToday.json.xz ──┐
+MTGJSON AllPrintings (Parquet) ──┼─▶ GitHub Actions daily @03:30 UTC ─▶ S3
+Scryfall default_cards.json ─────┘                                       │
+                                                                         ▼
+                                                              DuckDB / Athena / R arrow
+                                                                         │
+                                                                         ▼
+                                                              Quarto analysis (analysis/*.qmd)
 ```
 
-## Fact schema (`prices/`)
+## Current state
 
-| column           | type   | notes                                   |
-|------------------|--------|-----------------------------------------|
-| card_uuid        | string | MTGJSON UUID (primary join key)         |
-| date             | date32 | price observation date                  |
-| game             | dict   | paper / mtgo                            |
-| vendor           | dict   | tcgplayer, cardmarket, cardkingdom, cardsphere, cardhoarder |
-| finish           | dict   | normal / foil / etched                  |
-| kind             | dict   | retail / buylist                        |
-| currency         | dict   | USD / EUR / TIX (derived from vendor)   |
-| price            | float64 |                                        |
-| mtgjson_version  | string | provenance, e.g. "5.2.3"                |
+- **S3 bucket:** `s3://mtg-scrape-unwindgames` (us-east-1)
+- **Archive:** 64.9M price rows seeded across 89 date partitions
+- **Cron:** daily at 03:30 UTC (active)
+- **Analysis:** one starter Quarto doc (`analysis/01_explore.qmd`)
 
 ## Quickstart
 
-1. Do [infra/aws-setup.md](infra/aws-setup.md) once.
-2. Push this repo to GitHub. Add repo secret `AWS_ROLE_ARN` and repo
-   variables `MTG_S3_BUCKET`, `AWS_REGION`.
-3. Actions tab → **backfill** → Run workflow. Seeds 90 days.
-4. Daily cron takes over tomorrow at 03:30 UTC.
+### Query the archive
 
-## Local dev
+From R, with the `arrow` package:
+
+```r
+library(arrow); library(dplyr)
+prices <- open_dataset(
+  "s3://mtg-scrape-unwindgames/prices/?region=us-east-1",
+  format = "parquet"
+)
+prices |> count(vendor, kind, finish) |> collect()
+```
+
+From the CLI, with DuckDB:
+
+```bash
+duckdb -c "SELECT COUNT(*) FROM 's3://mtg-scrape-unwindgames/prices/*/*.parquet';"
+```
+
+### Render the analysis
+
+```bash
+Rscript -e 'install.packages(c("arrow","dplyr","ggplot2","scales","lubridate","here"))'
+quarto preview analysis/01_explore.qmd
+```
+
+### Run local Python ingest (optional)
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-export MTG_S3_BUCKET=mtg-scrape-unwindgames
-export AWS_REGION=us-east-1
-python -m scripts.backfill   # or -m src.ingest
+export MTG_S3_BUCKET=mtg-scrape-unwindgames AWS_REGION=us-east-1
+python -m src.ingest             # daily: pulls AllPricesToday
+python -m scripts.backfill       # one-shot: 90-day seed
 ```
 
-## Querying
+## Repo layout
 
-Analysis lives in Quarto (`.qmd`) under `analysis/`. Render with:
-
-```bash
-quarto render analysis/01_explore.qmd
-# or watch:
-quarto preview analysis/01_explore.qmd
+```
+src/           Python data-engineering library
+scripts/       Python one-shots (backfill, compact, scryfall, allprintings)
+.github/       GitHub Actions workflows (ingest, backfill, compact)
+analysis/      Quarto analyses (.qmd)
+R/             Reusable R code (theme_mtg, palettes)
+infra/         AWS setup runbook
+docs/agent/    Deep agent docs (context, tour, conventions, invariants,
+               playbooks, gotchas)
+AGENTS.md      Canonical agent brief (start here if contributing)
+CLAUDE.md      Claude Code shortcut (points to AGENTS.md)
 ```
 
-Pick a language per job — Python for engineering, R tidyverse/tidymodels for
-analysis. DuckDB works from either side. Examples:
+## Philosophy
 
-- **R (arrow):** `open_dataset("s3://.../prices/")` — see `analysis/01_explore.qmd`.
-- **Python (pyarrow):** `pyarrow.dataset.dataset("s3://.../prices/")`.
-- **DuckDB (CLI):** `SELECT * FROM 's3://mtg-scrape-unwindgames/prices/*/*.parquet' LIMIT 10;`
-- **Athena:** point a Glue crawler at `s3://.../prices/` (partition key: `dt`).
+- **Python** for engineering; **R tidyverse/tidymodels** for analysis;
+  **Quarto** wraps both. Pick the best tool per job — DuckDB is often
+  the right answer from either side.
+- **ggplot2 + Tufte-inspired** graphics via `theme_mtg()` in
+  `R/theme.R`.
+- **Agent-first docs.** `docs/agent/` is the source of truth; this
+  README is a human-friendly skin over those docs.
 
-R analysis uses the Tufte-inspired `theme_mtg()` defined in `R/theme.R`.
-Required R packages: `arrow`, `dplyr`, `ggplot2`, `scales`, `lubridate`, `here`.
+## Deeper reading
+
+- [`AGENTS.md`](AGENTS.md) — canonical brief for contributors
+- [`docs/agent/context.md`](docs/agent/context.md) — why this project exists
+- [`docs/agent/tour.md`](docs/agent/tour.md) — file-by-file map
+- [`docs/agent/conventions.md`](docs/agent/conventions.md) — language, style, graphics preferences
+- [`docs/agent/invariants.md`](docs/agent/invariants.md) — never-break rules with reasons
+- [`docs/agent/playbooks.md`](docs/agent/playbooks.md) — common-task recipes
+- [`docs/agent/gotchas.md`](docs/agent/gotchas.md) — landmines (with postmortems)
+- [`infra/aws-setup.md`](infra/aws-setup.md) — AWS provisioning runbook
